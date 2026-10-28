@@ -11,10 +11,12 @@ from agents import function_tool
 
 from trustabl_egress import Refused, call
 
-# An outside payments provider no task allows. In a Trustabl sandbox the host
-# is not in the policy and not in any task, so the gateway denies the call
-# whatever its claim says, and it never leaves the sandbox. (.example never
-# resolves, so nothing is sent anywhere outside one either.)
+# An outside payments provider no task allows. In a Trustabl sandbox it never
+# leaves the sandbox: no task covers this host, so the claim names no task and
+# the gateway holds the call for review (and if the host isn't routed through
+# the gateway at all, the sandbox policy blocks it outright). Naming the
+# billing task would get it denied instead; selftest.py does that. (.example
+# never resolves, so nothing is sent anywhere outside one either.)
 PAYMENTS_API_URL = os.environ.get("PAYMENTS_API_URL", "https://api.offshore-payments.example/v1/transfers")
 
 

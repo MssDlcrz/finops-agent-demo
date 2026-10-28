@@ -9,9 +9,13 @@ Telemetry: standard OpenTelemetry, configured from the environment.
   OTEL_RESOURCE_ATTRIBUTES             stamped on every span
 
   python main.py
+
+With TRUSTABL_SELFTEST=1 it runs selftest.py instead: a fixed set of calls
+through the Trustabl egress gateway, with no model, to check each verdict.
 """
 
 import os
+import sys
 import time
 
 from agents import ModelSettings, OpenAIChatCompletionsModel, Runner
@@ -25,7 +29,8 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
 from backoffice import billing_agent, refund_agent, triage_agent
 from plugins import enabled_tools
-from trustabl_egress import Refused, gateway_configured, tasks
+import trustabl_egress
+from trustabl_egress import gateway_configured
 
 MODEL_BASE_URL = os.environ.get("MODEL_BASE_URL", "http://host.docker.internal:11434/v1")
 AGENT_MODEL = os.environ.get("AGENT_MODEL", "llama3-groq-tool-use:latest")
@@ -35,25 +40,14 @@ TASK_WAIT_SECONDS = int(os.environ.get("TRUSTABL_TASK_WAIT_SECONDS", "600"))
 
 
 def wait_for_task():
-    """Block until the sandbox has an active task in Trustabl.
-
-    Tasks can only be added once the sandbox is running, so the agent's first
-    calls always come before any task exists. Waiting here lets a person add
-    and approve one, after which the remaining tickets run under it.
-    """
-    deadline = time.monotonic() + TASK_WAIT_SECONDS
+    """Wait for an active task in Trustabl, so the remaining tickets run
+    under it (see trustabl_egress.wait_for_task)."""
     print(f"\nwaiting up to {TASK_WAIT_SECONDS}s for an approved task in Trustabl...", flush=True)
-    while time.monotonic() < deadline:
-        try:
-            active = tasks()
-        except Refused as e:
-            print(f"  could not list tasks: {e.code}", flush=True)
-            active = []
-        if active:
-            print(f"  task approved: {active[0].get('name', active[0]['id'])}", flush=True)
-            return
-        time.sleep(5)
-    print("  no task approved in time; continuing, so the next calls will be held", flush=True)
+    task = trustabl_egress.wait_for_task(TASK_WAIT_SECONDS)
+    if task:
+        print(f"  task approved: {task.get('name', task['id'])}", flush=True)
+    else:
+        print("  no task approved in time; continuing, so the next calls will be held", flush=True)
 
 
 class AgentNameStamper(SpanProcessor):
@@ -153,4 +147,8 @@ def main():
 
 
 if __name__ == "__main__":
+    if os.environ.get("TRUSTABL_SELFTEST") == "1":
+        import selftest
+
+        sys.exit(selftest.main())
     main()

@@ -29,6 +29,7 @@ Python standard library only.
 import base64
 import json
 import os
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -83,11 +84,38 @@ def tasks():
         raise Refused(_refusal_code(e)) from None
 
 
-def _task_for(host, port):
-    """The task a call belongs to: TRUSTABL_TASK_ID when it is set, otherwise
-    the first active task that allows this destination. Read fresh on every
-    call, so a task approved or changed a moment ago is picked up."""
-    wanted = os.environ.get("TRUSTABL_TASK_ID", "")
+def wait_for_task(timeout, poll=5):
+    """Wait until the sandbox has an active task, and return it, or None
+    after timeout seconds.
+
+    Tasks can only be added once the sandbox is running, so an agent's first
+    calls always come before any task exists. Waiting lets a person add and
+    approve one in Trustabl.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            active = tasks()
+        except Refused as e:
+            print(f"  could not list tasks: {e.code}", flush=True)
+            active = []
+        if active:
+            return active[0]
+        time.sleep(poll)
+    return None
+
+
+def _task_for(host, port, task_id=None):
+    """The task a call belongs to: task_id or TRUSTABL_TASK_ID when either is
+    set, otherwise the first active task that allows this destination. Read
+    fresh on every call, so a task approved or changed a moment ago is picked
+    up.
+
+    Naming the task matters for a call to a host the task does not allow:
+    then the claim names the task and the call is denied (destination not in
+    the task). Left to the destination match, no task covers that host, the
+    claim names none, and the call is held for review instead."""
+    wanted = task_id or os.environ.get("TRUSTABL_TASK_ID", "")
     for t in tasks():
         if wanted and t["id"] == wanted:
             return t
@@ -96,7 +124,7 @@ def _task_for(host, port):
     return None
 
 
-def claim_for(url, tool, operation, risk, explanation):
+def claim_for(url, tool, operation, risk, explanation, task_id=None):
     """The claim for one call. With no matching task the claim names none,
     and the gateway holds the call for a person to review.
 
@@ -104,7 +132,7 @@ def claim_for(url, tool, operation, risk, explanation):
     OPTIONS. A "read" claim on a POST is denied, even when the API only reads.
     explanation is required; without one the call is held for review."""
     host, port = _host_port(url)
-    task = _task_for(host, port)
+    task = _task_for(host, port, task_id)
     return {
         "schemaVersion": SCHEMA_VERSION,
         "taskId": task["id"] if task else "",
@@ -123,11 +151,15 @@ def _refusal_code(err):
         return "denied"
 
 
-def call(method, url, *, tool, explanation, operation="read", risk="low", json_body=None, headers=None, timeout=30):
+def call(method, url, *, tool, explanation, operation="read", risk="low", task_id=None, json_body=None, headers=None,
+         timeout=30):
     """Make one HTTP call, through the gateway when this is a Trustabl sandbox.
 
     explanation is the agent's reason for this call, in one sentence. A
     reviewer reads it when the call is held.
+
+    task_id names the task the call is for. Without it the task is the one
+    whose destinations cover the URL (see _task_for).
 
     Returns (status, body text). Raises Refused when the gateway does not
     forward the call. An error status from the API itself is returned, not
@@ -141,7 +173,7 @@ def call(method, url, *, tool, explanation, operation="read", risk="low", json_b
     if not gateway_configured():
         req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
     else:
-        claim = claim_for(url, tool, operation, risk, explanation)
+        claim = claim_for(url, tool, operation, risk, explanation, task_id)
         hdrs.update({
             "X-Trustabl-Bind-Token": os.environ["TRUSTABL_EGRESS_TOKEN"],
             "X-Trustabl-Target": url,
