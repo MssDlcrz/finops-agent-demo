@@ -23,7 +23,7 @@ from trustabl_egress import Refused, call
 BACKOFFICE_API_URL = os.environ.get("BACKOFFICE_API_URL", "https://httpbin.org/anything/backoffice").rstrip("/")
 
 
-def backoffice(method, path, *, tool, operation, risk, payload=None):
+def backoffice(method, path, *, tool, operation, risk, explanation, payload=None):
     """Call the back-office API and say what happened, in words the model reads.
 
     In a Trustabl sandbox the call goes through the egress gateway with a claim
@@ -31,7 +31,8 @@ def backoffice(method, path, *, tool, operation, risk, payload=None):
     than raised, so the run carries on to the next ticket.
     """
     try:
-        status, _ = call(method, f"{BACKOFFICE_API_URL}{path}", tool=tool, operation=operation, risk=risk, json_body=payload)
+        status, _ = call(method, f"{BACKOFFICE_API_URL}{path}", tool=tool, operation=operation, risk=risk,
+                         explanation=explanation, json_body=payload)
     except Refused as e:
         print(f"    {tool}: refused by Trustabl ({e.code})", flush=True)
         if e.code == "review_pending":
@@ -54,21 +55,26 @@ def _dollars(amount):
 @function_tool
 def classify_ticket(text: str = "") -> str:
     """Classify a customer ticket into a routing category."""
-    failed = backoffice("POST", "/tickets/classify", tool="classify_ticket", operation="read", risk="low", payload={"text": text})
+    # The classifier only reads, but it is a POST, and a claim describes the
+    # HTTP call: "read" on a POST would be denied.
+    failed = backoffice("POST", "/tickets/classify", tool="classify_ticket", operation="write", risk="low",
+                        explanation="Classifying a customer ticket so it reaches the right team", payload={"text": text})
     return failed or "category: refund"
 
 
 @function_tool
 def get_customer(customer_id: str = "") -> str:
     """Fetch a customer profile by id."""
-    failed = backoffice("GET", f"/customers/{customer_id or 'unknown'}", tool="get_customer", operation="read", risk="low")
+    failed = backoffice("GET", f"/customers/{customer_id or 'unknown'}", tool="get_customer", operation="read", risk="low",
+                        explanation=f"Looking up customer {customer_id or 'unknown'} to answer their ticket")
     return failed or f"Customer {customer_id or 'unknown'}: tier gold, 3 open orders."
 
 
 @function_tool
 def lookup_order(order_id: str = "") -> str:
     """Look up an order by id."""
-    failed = backoffice("GET", f"/orders/{order_id or 'unknown'}", tool="lookup_order", operation="read", risk="low")
+    failed = backoffice("GET", f"/orders/{order_id or 'unknown'}", tool="lookup_order", operation="read", risk="low",
+                        explanation=f"Checking the status of order {order_id or 'unknown'} for the customer")
     return failed or f"Order {order_id or 'unknown'}: delivered, $5,000.00, card on file."
 
 
@@ -80,6 +86,7 @@ def issue_refund(order_id: str = "", amount: str = "") -> str:
     failed = backoffice(
         "POST", f"/orders/{order_id or 'unknown'}/refunds",
         tool="issue_refund", operation="write", risk=risk, payload={"amount": amount},
+        explanation=f"Refunding {amount or 'the amount'} on order {order_id or 'unknown'} as the customer's ticket asks",
     )
     return failed or f"Refunded {amount or 'the amount'} for order {order_id or 'unknown'} to the original card."
 
@@ -90,6 +97,7 @@ def adjust_invoice(invoice_id: str = "", amount: str = "") -> str:
     failed = backoffice(
         "POST", f"/invoices/{invoice_id or 'unknown'}/adjustments",
         tool="adjust_invoice", operation="write", risk="medium", payload={"amount": amount},
+        explanation=f"Adjusting invoice {invoice_id or 'unknown'} by {amount or 'the amount'} for the customer",
     )
     return failed or f"Adjusted invoice {invoice_id or 'unknown'} by {amount or 'the amount'}."
 

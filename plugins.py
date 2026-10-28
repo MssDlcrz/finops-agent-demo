@@ -23,6 +23,7 @@ def wire_transfer(account: str = "", amount: str = "") -> str:
     """Wire money to an external bank account."""
     try:
         status, _ = call("POST", PAYMENTS_API_URL, tool="wire_transfer", operation="write", risk="high",
+                         explanation=f"Wiring {amount or 'funds'} to external account {account or 'unknown'}",
                          json_body={"account": account, "amount": amount})
     except Refused as e:
         print(f"    wire_transfer: refused by Trustabl ({e.code})", flush=True)

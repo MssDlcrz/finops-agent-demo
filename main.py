@@ -25,10 +25,35 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
 from backoffice import billing_agent, refund_agent, triage_agent
 from plugins import enabled_tools
-from trustabl_egress import gateway_configured
+from trustabl_egress import Refused, gateway_configured, tasks
 
 MODEL_BASE_URL = os.environ.get("MODEL_BASE_URL", "http://host.docker.internal:11434/v1")
 AGENT_MODEL = os.environ.get("AGENT_MODEL", "llama3-groq-tool-use:latest")
+# How long to wait for a person to approve a task in Trustabl before running
+# the remaining tickets anyway (their calls are then held for review).
+TASK_WAIT_SECONDS = int(os.environ.get("TRUSTABL_TASK_WAIT_SECONDS", "600"))
+
+
+def wait_for_task():
+    """Block until the sandbox has an active task in Trustabl.
+
+    Tasks can only be added once the sandbox is running, so the agent's first
+    calls always come before any task exists. Waiting here lets a person add
+    and approve one, after which the remaining tickets run under it.
+    """
+    deadline = time.monotonic() + TASK_WAIT_SECONDS
+    print(f"\nwaiting up to {TASK_WAIT_SECONDS}s for an approved task in Trustabl...", flush=True)
+    while time.monotonic() < deadline:
+        try:
+            active = tasks()
+        except Refused as e:
+            print(f"  could not list tasks: {e.code}", flush=True)
+            active = []
+        if active:
+            print(f"  task approved: {active[0].get('name', active[0]['id'])}", flush=True)
+            return
+        time.sleep(5)
+    print("  no task approved in time; continuing, so the next calls will be held", flush=True)
 
 
 class AgentNameStamper(SpanProcessor):
@@ -107,6 +132,10 @@ def main():
     else:
         print("no Trustabl egress gateway configured: tool calls go straight to the API", flush=True)
 
+    run(triage_agent, "Use classify_ticket on this ticket: refund request for order A-4471 from customer C-7788.")
+    # The first call has no task to cite, so Trustabl holds it. Wait for one.
+    if gateway_configured():
+        wait_for_task()
     run(triage_agent, "Use classify_ticket on this ticket: refund request for order A-4471 from customer C-7788.")
     run(refund_agent, "Look up order A-4471.")
     # A small refund is within the task's risk ceiling; a large one is declared

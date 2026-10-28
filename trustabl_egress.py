@@ -3,8 +3,8 @@
 When this agent runs in a Trustabl sandbox whose hosts are routed through the
 gateway, it cannot reach those hosts directly: its only way out is the gateway,
 which checks a short claim attached to every call (which approved task, which
-tool, where the call goes, how risky) and forwards the call only if the claim
-matches. See Trustabl's docs/RUNTIME_CLAIM_CHECKER_GUIDE.md.
+tool, where the call goes, whether it reads or writes, how risky, and why) and
+forwards the call only if the claim matches. See Trustabl's docs/RUNTIME_CLAIM_CHECKER_GUIDE.md.
 
 Trustabl's launch sets two variables in the sandbox:
 
@@ -20,7 +20,8 @@ Python standard library only.
 
     try:
         status, body = call("POST", "https://api.example.com/refunds", tool="issue_refund",
-                            operation="write", risk="medium", json_body={"order": "A-4471"})
+                            operation="write", risk="medium", json_body={"order": "A-4471"},
+                            explanation="Refunding order A-4471 as the customer's ticket asks")
     except Refused as e:
         ...  # e.code is "denied", "review_pending", "unauthenticated" or "check_unavailable"
 """
@@ -95,9 +96,13 @@ def _task_for(host, port):
     return None
 
 
-def claim_for(url, tool, operation, risk):
+def claim_for(url, tool, operation, risk, explanation):
     """The claim for one call. With no matching task the claim names none,
-    and the gateway holds the call for a person to review."""
+    and the gateway holds the call for a person to review.
+
+    operation must describe the HTTP call: "read" only for GET, HEAD and
+    OPTIONS. A "read" claim on a POST is denied, even when the API only reads.
+    explanation is required; without one the call is held for review."""
     host, port = _host_port(url)
     task = _task_for(host, port)
     return {
@@ -107,6 +112,7 @@ def claim_for(url, tool, operation, risk):
         "expectedEffect": {"operation": operation, "destination": f"{host}:{port}"},
         "riskTier": risk,
         "evidenceRefs": [{"type": "task", "digest": task["digest"]}] if task else [],
+        "explanation": explanation,
     }
 
 
@@ -117,8 +123,11 @@ def _refusal_code(err):
         return "denied"
 
 
-def call(method, url, *, tool, operation="read", risk="low", json_body=None, headers=None, timeout=30):
+def call(method, url, *, tool, explanation, operation="read", risk="low", json_body=None, headers=None, timeout=30):
     """Make one HTTP call, through the gateway when this is a Trustabl sandbox.
+
+    explanation is the agent's reason for this call, in one sentence. A
+    reviewer reads it when the call is held.
 
     Returns (status, body text). Raises Refused when the gateway does not
     forward the call. An error status from the API itself is returned, not
@@ -132,7 +141,7 @@ def call(method, url, *, tool, operation="read", risk="low", json_body=None, hea
     if not gateway_configured():
         req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
     else:
-        claim = claim_for(url, tool, operation, risk)
+        claim = claim_for(url, tool, operation, risk, explanation)
         hdrs.update({
             "X-Trustabl-Bind-Token": os.environ["TRUSTABL_EGRESS_TOKEN"],
             "X-Trustabl-Target": url,
